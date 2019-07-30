@@ -21,23 +21,25 @@ enum arg_format {
 	rs_imm,
 	rt_rs_imm,
 	rt_imm,
-	rt_imm_rs
+	rt_imm_rs,
+	rs_rt_addr,
+	rs_addr
 };
 
 std::map<std::string, std::pair<std::bitset<6>, arg_format>> opcode_table = {
-	{ "ADDI" , { 0b001000 , rt_rs_imm }},
-	{ "ANDI" , { 0b001100 , rt_rs_imm }},
-	{ "BEQ"  , { 0b000100 , rs_rt_imm }},
-	{ "BGEZ" , { 0b001100 , rs_imm    }},
-	{ "BGTZ" , { 0b000111 , rs_imm    }},
-	{ "BLEZ" , { 0b000110 , rs_imm    }},
-	{ "BNE"  , { 0b000101 , rs_rt_imm }},
-	{ "LW"   , { 0b100011 , rt_imm_rs }},
-	{ "SW"   , { 0b101011 , rt_imm_rs }},
-	{ "ORI"  , { 0b001101 , rt_rs_imm }},
-	{ "XORI" , { 0b001110 , rt_rs_imm }},
-	{ "J"    , { 0b000010 , addr      }},
-	{ "JAL"  , { 0b000011 , addr      }}
+	{ "ADDI" , { 0b001000 , rt_rs_imm    }},
+	{ "ANDI" , { 0b001100 , rt_rs_imm    }},
+	{ "BEQ"  , { 0b000100 , rs_rt_addr   }},
+	{ "BGEZ" , { 0b001100 , rs_addr      }},
+	{ "BGTZ" , { 0b000111 , rs_addr      }},
+	{ "BLEZ" , { 0b000110 , rs_addr      }},
+	{ "BNE"  , { 0b000101 , rs_rt_addr   }},
+	{ "LW"   , { 0b100011 , rt_imm_rs    }},
+	{ "SW"   , { 0b101011 , rt_imm_rs    }},
+	{ "ORI"  , { 0b001101 , rt_rs_imm    }},
+	{ "XORI" , { 0b001110 , rt_rs_imm    }},
+	{ "J"    , { 0b000010 , addr         }},
+	{ "JAL"  , { 0b000011 , addr         }}
 };
 
 std::map<std::string, std::pair<std::bitset<6>, arg_format>> funct_table = {
@@ -93,8 +95,10 @@ int main(int argc, char * argv[]) {
 	}
 
 	int linenumber = 0;
-	std::vector<std::bitset<32>> wip_asm;
-	std::map<int, std::string> unresolved_jumps;
+	std::vector<std::bitset<32>> assembly;
+
+	// tuple format = linenumber, label, is_relative?
+	std::vector<std::tuple<int, std::string, bool>> unresolved_jumps; 
 	std::map<std::string, int> labels;
 	std::string line;
 	while (std::getline(src_stream, line)) {
@@ -113,6 +117,7 @@ int main(int argc, char * argv[]) {
 		std::string instruction_str = tokens.at(0);
 		int rt = 0, rd = 0, rs = 0, shamt = 0, imm = 0, opcode = 0, funct = 0;
 		std::string address;
+		bool relative_addr = false;
 
 		std::transform(instruction_str.begin(), instruction_str.end(), instruction_str.begin(), ::toupper);
 
@@ -184,6 +189,19 @@ int main(int argc, char * argv[]) {
 			address = tokens.at(1);
 			break;
 
+		case rs_addr:
+			rs = stoi(tokens.at(1));
+			address = tokens.at(2);
+			relative_addr = true;
+			break;
+
+		case rs_rt_addr:
+			rs = stoi(tokens.at(1));
+			rt = stoi(tokens.at(2));
+			address = tokens.at(3);
+			relative_addr = true;
+			break;
+
 		case rs_imm:
 			rs = stoi(tokens.at(1));
 			imm = stoi(tokens.at(2));
@@ -225,26 +243,29 @@ int main(int argc, char * argv[]) {
 
 		// store jump to be resolved later
 		if (!address.empty()) {
-			unresolved_jumps.insert( { instruction.to_ulong(), address } );
+			unresolved_jumps.push_back( { linenumber, address, relative_addr} );
 		}
 
-		wip_asm.push_back(instruction);
+		assembly.push_back(instruction);
 		linenumber++;
 	}
 
-	// resolve all jumps
-	std::vector<std::bitset<32>> assembly;
-	for (auto e : wip_asm) {
-		auto iter = unresolved_jumps.find(e.to_ulong());
-		if (iter == unresolved_jumps.end()) {
-			assembly.push_back(e);
+	for (auto e : unresolved_jumps) {
+		int linenumber = std::get<0>(e);
+		std::string label = std::get<1>(e);
+		bool relative_addr = std::get<2>(e);
+
+		int offset = labels.at(label) - linenumber - 1;
+
+		if (relative_addr) {
+			std::bitset<32> imm = std::bitset<16>(std::bitset<16>().flip().to_ulong() + offset + 1).to_ulong();
+			assembly.at(linenumber) |= imm;
 		}
 		else {
-			std::string label = iter->second;
-			std::bitset<32> address = labels.at(label);
-			std::bitset<32> instruction = e | address;
-			assembly.push_back(instruction);
+			// no need for sign manipulation
+			assembly.at(linenumber) |= labels.at(label);
 		}
+
 	}
 
 	// print to output file
