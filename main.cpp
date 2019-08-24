@@ -102,14 +102,41 @@ std::bitset<32> make_I(std::bitset<32> opcode, std::bitset<32> rs, std::bitset<3
 	return instruction;
 }
 
+std::array<char, 4> unpack_bitset(std::bitset<32> b) {
+	std::array<char, 4> out = {0, 0, 0, 0};
+	for (int i = 0; i < 32; i++) {
+		out.at(i / 8) <<= 1;
+		out.at(i / 8) |= b[31 - i] ? 1 : 0;
+	}
+	return out;
+}
+
 int main(int argc, char * argv[]) {
 
-	if (argc != 2) {
+	if (argc == 1 || argc > 3) {
 		std::cout << "Arguments not supported" << std::endl;
 		exit(1);
 	}
 
-	std::string filename(argv[1]);
+	std::string filename("");;
+	bool ascii_out = false;
+
+	// load args
+	if (argc == 2) {
+		filename = std::string(argv[1]);
+	}
+	else if (argv[1][0] == '-') {
+		filename = std::string(argv[2]);
+		ascii_out = argv[1][1] == 'a';
+	}
+	else if(argv[2][0] == '-') {
+		filename = std::string(argv[1]);
+		ascii_out = argv[2][1] == 'a';
+	}
+	else {
+		std::cout << "Arguments unrecognized" << std::endl;
+	}
+
 	std::ifstream src_stream(filename);
 
 	if (!src_stream.is_open()) {
@@ -134,9 +161,10 @@ int main(int argc, char * argv[]) {
 
 		// remove comments
 		for (auto s : uncleaned_tokens) {
-			if (s.front() != ';') {
-				tokens.push_back(s);
+			if (s.front() == ';') {
+				break;
 			}
+			tokens.push_back(s);
 		}
 
 		// Hopefully that line only had comments on it
@@ -185,7 +213,7 @@ int main(int argc, char * argv[]) {
 		}
 
 		// validate amount of tokens
-		if (!valid_arg_count(format, tokens.size())) {
+		if (!valid_arg_count(format, tokens.size() - 1)) {
 			std::cout << "Invalid usage of instruction: " << instruction_str
 				<< "\nWas expecting " << arg_fmt_count.at(format) << " got " << tokens.size() << " instead" << std::endl;
 			error_occurred = true;
@@ -333,16 +361,33 @@ int main(int argc, char * argv[]) {
 
 	// print to output file
 	std::string output_filename(filename.append(".bin"));
-	std::ofstream out_stream(output_filename);
+
+	// chose mode to write in
+	auto mode = ascii_out ? std::ofstream::out : std::ofstream::binary;
+
+	std::ofstream out_stream(output_filename, mode);
 
 	if (!out_stream.is_open()) {
 		std::cout << "Could not open file " << output_filename << " for writing" << std::endl;
 		exit(1);
 	}
 
-	for (auto i : assembly) {
-		out_stream << i << "\n";
+	if (ascii_out) {
+		for (auto i : assembly) {
+			out_stream << i << "\n";
+		}
 	}
+	else {
+		std::vector<char> raw(assembly.size() * 4);
+		int offset = 0;
+		for (auto i : assembly) {
+			auto bytes = unpack_bitset(i);
+			memcpy(raw.data() + offset, bytes.data(), sizeof(char) * 4);
+			offset += 4;
+		}
+		out_stream.write(raw.data(), raw.size());
+	}
+
 
 	return 0;
 }
