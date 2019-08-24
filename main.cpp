@@ -26,6 +26,29 @@ enum arg_format {
 	rs_addr
 };
 
+std::map<arg_format, int> arg_fmt_count = {
+	{ rt_,         1 },
+	{ rd_,         1 },
+	{ rs_,         1 },
+	{ rs_rt,       2 },
+	{ rd_rs,       2 },
+	{ rd_rt_shamt, 3 },
+	{ rd_rt_rs,    3 },
+	{ rd_rs_rt,    3 },
+	{ addr,        1 },
+	{ rs_rt_imm,   3 },
+	{ rs_imm,      2 },
+	{ rt_rs_imm,   3 },
+	{ rt_imm,      2 },
+	{ rt_imm_rs,   3 },
+	{ rs_rt_addr,  3 },
+	{ rs_addr,     2 }
+};
+
+inline bool valid_arg_count(arg_format fmt, int n) {
+	return n == arg_fmt_count.at(fmt);
+}
+
 std::map<std::string, std::pair<std::bitset<6>, arg_format>> opcode_table = {
 	{ "ADDI" , { 0b001000 , rt_rs_imm    }},
 	{ "ANDI" , { 0b001100 , rt_rs_imm    }},
@@ -69,12 +92,12 @@ std::vector<std::string> split(const std::string & s, const char delim) {
 	return ls;
 }
 
-std::bitset<32> make_r_type(std::bitset<32> rs, std::bitset<32> rt, std::bitset<32> rd, std::bitset<32> shamt, std::bitset<32> funct) {
+std::bitset<32> make_R(std::bitset<32> rs, std::bitset<32> rt, std::bitset<32> rd, std::bitset<32> shamt, std::bitset<32> funct) {
 	std::bitset<32> instruction = rs << 21 | rt << 16 | rd << 11 | shamt << 6 | funct;
 	return instruction;
 }
 
-std::bitset<32> make_i_type(std::bitset<32> opcode, std::bitset<32> rs, std::bitset<32> rt, std::bitset<32> imm) {
+std::bitset<32> make_I(std::bitset<32> opcode, std::bitset<32> rs, std::bitset<32> rt, std::bitset<32> imm) {
 	std::bitset<32> instruction = opcode << 26 | rs << 21 | rt << 16 | imm;
 	return instruction;
 }
@@ -97,16 +120,27 @@ int main(int argc, char * argv[]) {
 	int linenumber = 0;
 	std::vector<std::bitset<32>> assembly;
 
-	// tuple format = linenumber, label, is_relative?
+	// tuple format := linenumber, label, is_relative?
 	std::vector<std::tuple<int, std::string, bool>> unresolved_jumps; 
 	std::map<std::string, int> labels;
 	std::string line;
-	while (std::getline(src_stream, line)) {
+	bool error_occurred = false;
+	while (std::getline(src_stream, line) && !error_occurred) {
 		// ignore empty lines
 		if (line.size() == 0) continue;
 
 		// break line up into tokens using spaces
-		std::vector<std::string> tokens = split(line, ' ');
+		std::vector<std::string> tokens, uncleaned_tokens = split(line, ' ');
+
+		// remove comments
+		for (auto s : uncleaned_tokens) {
+			if (s.front() != ';') {
+				tokens.push_back(s);
+			}
+		}
+
+		// Hopefully that line only had comments on it
+		if (tokens.size() == 0) continue;
 
 		// check if label
 		if (tokens.size() == 1) {
@@ -129,6 +163,7 @@ int main(int argc, char * argv[]) {
 		auto o_iter = opcode_table.find(instruction_str);
 		bool is_opcode = o_iter != opcode_table.end();
 
+		// verify and check instruction format
 		if (is_funct) {
 			auto iter = f_iter;
 			format = iter->second.second;
@@ -143,7 +178,22 @@ int main(int argc, char * argv[]) {
 			opcode = iter->second.first.to_ulong();
 			funct = 0;
 		}
+		else {
+			std::cout << "Unknown instruction: " << instruction_str << std::endl;
+			error_occurred = true;
+			continue;
+		}
 
+		// validate amount of tokens
+		if (!valid_arg_count(format, tokens.size())) {
+			std::cout << "Invalid usage of instruction: " << instruction_str
+				<< "\nWas expecting " << arg_fmt_count.at(format) << " got " << tokens.size() << " instead" << std::endl;
+			error_occurred = true;
+			continue;
+		}
+
+		// perform parsing
+		// TODO need to handle errors with stoi
 		switch (format) {
 		case rt_:
 			rt = stoi(tokens.at(1));
@@ -229,16 +279,15 @@ int main(int argc, char * argv[]) {
 			imm = stoi(tokens.at(2));
 			rs = stoi(tokens.at(3));
 			break;
-
 		}
 
 		std::bitset<32> instruction;
 
 		if (is_funct) {
-			instruction = make_r_type(rs, rt, rd, shamt, funct);
+			instruction = make_R(rs, rt, rd, shamt, funct);
 		}
 		else if (is_opcode) {
-			instruction = make_i_type(opcode, rs, rt, imm);
+			instruction = make_I(opcode, rs, rt, imm);
 		}
 
 		// store jump to be resolved later
@@ -255,7 +304,16 @@ int main(int argc, char * argv[]) {
 		std::string label = std::get<1>(e);
 		bool relative_addr = std::get<2>(e);
 
-		int offset = labels.at(label) - linenumber - 1;
+		// TODO handle error here when label cannot be found
+		int offset;
+		try {
+			offset = labels.at(label) - linenumber - 1;
+		}
+		catch (std::out_of_range e) {
+			std::cout << "Label: " << label << " could not be resolved. Are you sure you defined it?" << std::endl;
+			error_occurred = true;
+			continue;
+		}
 
 		if (relative_addr) {
 			std::bitset<32> imm = std::bitset<16>(std::bitset<16>().flip().to_ulong() + offset + 1).to_ulong();
@@ -266,6 +324,11 @@ int main(int argc, char * argv[]) {
 			assembly.at(linenumber) |= labels.at(label);
 		}
 
+	}
+
+	if (error_occurred) {
+		std::cout << "Could not assemble program: " << filename << std::endl;
+		return -1;
 	}
 
 	// print to output file
